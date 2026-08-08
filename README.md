@@ -130,7 +130,7 @@ docker run -d \
   -p 8000:8000 \
   -v $(pwd)/config/server-config.yaml:/app/config.yaml:ro \
   -e CONFIG_PATH=/app/config.yaml \
-  ghcr.io/mcjpg/serverstatusapi-server:latest
+  ghcr.io/minejpgcraft/serverstatusapi-server:latest
 
 # 3. 验证
 curl http://localhost:8000/api/health
@@ -198,21 +198,21 @@ docker run -d \
   -e TOKEN="change-me-please" \
   -e MAX_CONCURRENCY="50" \
   -e SERVER_TIMEOUT="10" \
-  ghcr.io/mcjpg/serverstatusapi-node:latest
+  ghcr.io/minejpgcraft/serverstatusapi-node:latest
 ```
 
 #### 镜像标签说明
 
 | 镜像 | 标签 | 说明 | 示例 |
 |------|------|------|------|
-| 服务端 | `latest` | main/master 分支最新 | `ghcr.io/mcjpg/serverstatusapi-server:latest` |
-| 服务端 | `v1.0.0` | 精确版本号 | `ghcr.io/mcjpg/serverstatusapi-server:v1.0.0` |
-| 服务端 | `1.0` | 主次版本号 | `ghcr.io/mcjpg/serverstatusapi-server:1.0` |
-| 服务端 | `sha-abc123` | 特定 commit | `ghcr.io/mcjpg/serverstatusapi-server:sha-abc123` |
-| 节点端 | `latest` | main/master 分支最新 | `ghcr.io/mcjpg/serverstatusapi-node:latest` |
-| 节点端 | `v1.0.0` | 精确版本号 | `ghcr.io/mcjpg/serverstatusapi-node:v1.0.0` |
-| 节点端 | `1.0` | 主次版本号 | `ghcr.io/mcjpg/serverstatusapi-node:1.0` |
-| 节点端 | `sha-abc123` | 特定 commit | `ghcr.io/mcjpg/serverstatusapi-node:sha-abc123` |
+| 服务端 | `latest` | main/master 分支最新 | `ghcr.io/minejpgcraft/serverstatusapi-server:latest` |
+| 服务端 | `v1.0.0` | 精确版本号 | `ghcr.io/minejpgcraft/serverstatusapi-server:v1.0.0` |
+| 服务端 | `1.0` | 主次版本号 | `ghcr.io/minejpgcraft/serverstatusapi-server:1.0` |
+| 服务端 | `sha-abc123` | 特定 commit | `ghcr.io/minejpgcraft/serverstatusapi-server:sha-abc123` |
+| 节点端 | `latest` | main/master 分支最新 | `ghcr.io/minejpgcraft/serverstatusapi-node:latest` |
+| 节点端 | `v1.0.0` | 精确版本号 | `ghcr.io/minejpgcraft/serverstatusapi-node:v1.0.0` |
+| 节点端 | `1.0` | 主次版本号 | `ghcr.io/minejpgcraft/serverstatusapi-node:1.0` |
+| 节点端 | `sha-abc123` | 特定 commit | `ghcr.io/minejpgcraft/serverstatusapi-node:sha-abc123` |
 
 #### 支持的平台
 
