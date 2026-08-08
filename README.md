@@ -289,7 +289,15 @@ Body: {"reports": [{"ip": "...", "online": true, ...}, ...]}
 GET /api/health
 ```
 
-返回服务端当前监测概况。
+返回服务端当前监测概况、缓存/限流统计、配置状态。
+
+### 手动配置重载接口
+
+```
+POST /api/config/reload
+```
+
+手动触发配置文件重载。通常无需调用，服务端会自动检测文件变更。
 
 ## 数据聚合策略
 
@@ -452,6 +460,96 @@ REPORT_INTERVAL=30
 CONFIG_REFRESH_INTERVAL=120
 ```
 
+## 配置热重载
+
+服务端支持 **配置文件热重载**，修改 `config.yaml` 后保存即可，无需重启服务。
+
+### 工作原理
+
+```
+保存 config.yaml
+       │
+       ▼
+  服务端后台监听任务（每3秒检查文件 mtime）
+       │
+       ├─ 文件未变化 → 继续等待
+       │
+       └─ 文件已变化 → 重新加载 YAML
+                        │
+                        ▼
+                    对比新旧配置差异
+                        │
+                        ▼
+                    更新所有依赖对象：
+                    ├── authenticator（节点列表 + Token + per-node 配置）
+                    ├── storage（数据过期时间）
+                    ├── query_cache（缓存开关 + TTL + 容量）
+                    ├── query_limiter（查询限流参数）
+                    ├── node_limiter（节点限流参数）
+                    └── 失效全部查询缓存
+                        │
+                        ▼
+                    日志输出变更项
+```
+
+### 支持热重载的配置项
+
+| 配置项 | 热重载效果 |
+|-------|-----------|
+| `registered_nodes` | 新增/删除/修改节点立即生效，新节点可马上连接，旧节点Token失效 |
+| `node_defaults.monitor_interval` | 节点下次拉取配置时获取新值 |
+| `node_defaults.report_interval` | 同上 |
+| `node_defaults.config_refresh_interval` | 同上 |
+| `node_defaults.data_expire_minutes` | 立即更新过期时间，下次 cleanup 按新值执行 |
+| `cache.enabled` / `cache.ttl` / `cache.max_size` | 立即生效，同时清空旧缓存 |
+| `rate_limit.*` | 立即生效，重建限流器 |
+| `fetch.url` / `fetch.interval` | 下轮获取时使用新值 |
+| `server.host` / `server.port` | ⚠️ 不支持热重载，需重启 |
+| `server.workers` | ⚠️ 不支持热重载，需重启 |
+
+### 使用方式
+
+**方式一：自动检测（推荐）**
+
+直接修改并保存 `config.yaml`，服务端在 3 秒内自动检测并应用。
+
+```bash
+# 编辑配置
+vi config.yaml
+# 保存后查看服务端日志
+tail -f /var/log/mcstatus-server.log
+# 会看到：配置热重载完成，变更项: registered_nodes: 新增节点: {'node-004'}
+```
+
+**方式二：手动触发**
+
+```bash
+# 调用 API 手动触发重载
+curl -X POST http://localhost:8000/api/config/reload
+# {"status":"ok","message":"配置已重载"}
+```
+
+### Docker 环境下的热重载
+
+Docker 部署时，将配置文件挂载为卷即可支持热重载：
+
+```yaml
+# docker-compose.yml
+volumes:
+  - ./config/server-config.yaml:/app/config.yaml:ro
+```
+
+```bash
+# 修改宿主机上的配置文件
+vi ./config/server-config.yaml
+
+# 容器内的服务端会自动检测到文件变化并热重载
+# 无需 docker restart
+```
+
+> **注意**：Docker 环境下某些挂载方式（如 NFS）可能不实时传播 mtime 变更。
+> 如果自动检测不生效，使用 `curl -X POST /api/config/reload` 手动触发。
+
 ## 高并发优化
 
 服务端内置多项高并发优化设计：
@@ -466,6 +564,7 @@ CONFIG_REFRESH_INTERVAL=120
 | **连接池复用** | httpx 全局客户端复用连接池，减少TCP握手开销 |
 | **CORS 支持** | 内置CORS中间件，前端可直接跨域调用 |
 | **多 Worker** | 支持多进程部署：`uvicorn server:app --workers 4` |
+| **配置热重载** | 自动检测 config.yaml 变更并实时应用，无需重启服务 |
 
 ### 性能预估
 
