@@ -291,6 +291,24 @@ GET /api/health
 
 返回服务端当前监测概况、缓存/限流统计、配置状态。
 
+### 节点状态接口
+
+```
+GET /api/nodes/status
+```
+
+检查所有注册节点的在线/离线状态。在线标准：节点在 `data_expire_minutes`（默认10分钟）内有上报数据。
+
+返回：
+```json
+{
+  "online": ["node-001", "node-002"],
+  "offline": ["node-003"]
+}
+```
+
+无需鉴权，外部可直接调用。
+
 ### 手动配置重载接口
 
 ```
@@ -430,7 +448,6 @@ registered_nodes:
 | `MAX_CONCURRENCY` | 最大并发检测数 | `50` |
 | `SERVER_TIMEOUT` | 单台服务器检测超时（秒） | `10` |
 | `OFFLINE_BACKOFF` | 离线服务器退避倍数 | `3` |
-| `THREAD_POOL_SIZE` | 线程池大小 | `100` |
 
 #### 配置示例
 
@@ -653,7 +670,7 @@ git push origin v1.0.0
 ## 技术栈
 
 - **服务端**: FastAPI + Uvicorn + httpx + PyYAML
-- **节点端**: asyncio + httpx + mcstatus + python-dotenv
+- **节点端**: asyncio + httpx + mcstatus + dnspython + python-dotenv
 - **Python**: >= 3.9
 
 ## 节点端高并发优化
@@ -662,13 +679,11 @@ git push origin v1.0.0
 
 | 优化项 | 说明 | 默认值 |
 |-------|------|-------|
-| **高并发检测** | 可配置的最大并发数，默认50（原版10） | `MAX_CONCURRENCY=50` |
+| **高并发检测** | 可配置的最大并发数 | `MAX_CONCURRENCY=50` |
 | **单服务器超时** | 每台服务器检测带超时控制，防止死服务器阻塞并发槽 | `SERVER_TIMEOUT=10` |
 | **离线退避** | 已知离线的服务器按倍数降低检测频率，减少无效请求 | `OFFLINE_BACKOFF=3` |
-| **专用线程池** | mcstatus 同步调用使用独立线程池，不耗尽默认线程池 | `THREAD_POOL_SIZE=100` |
-| **DNS缓存** | 缓存DNS解析结果5分钟，避免每轮重复解析 | 自动 |
-| **分批处理** | 大批量时分批创建任务，避免一次性创建数千协程的内存峰值 | 自动 |
-| **进度日志** | 服务器>50台时每完成25%输出进度 | 自动 |
+| **专用线程池** | mcstatus 同步调用使用独立线程池，大小自动计算（并发×4） | 自动 |
+| **SRV 记录解析** | 不含端口的 IP 先用 dnspython 手动解析 SRV 记录拼接端口，解析不出才传原始地址 | 自动 |
 | **精确间隔** | sleep = interval - elapsed，确保实际周期 = 配置间隔 | 自动 |
 | **结果保留** | 被退避跳过的服务器保留上一次结果，上报时数据完整 | 自动 |
 
@@ -706,11 +721,9 @@ SERVER_TIMEOUT=10
 # 中规模（50~200台）：适当调高并发
 MAX_CONCURRENCY=80
 SERVER_TIMEOUT=8
-THREAD_POOL_SIZE=120
 
 # 大规模（200+台）：高并发 + 短超时 + 强退避
 MAX_CONCURRENCY=100
 SERVER_TIMEOUT=5
 OFFLINE_BACKOFF=5
-THREAD_POOL_SIZE=150
 ```
