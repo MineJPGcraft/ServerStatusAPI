@@ -171,7 +171,7 @@ python node.py
 
 ```bash
 # 1. 下载 docker-compose.yml
-curl -O https://raw.githubusercontent.com/mcjpg/ServerStatusAPI/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/minejpgcraft/ServerStatusAPI/main/docker-compose.yml
 
 # 2. 编辑环境变量
 vi docker-compose.yml
@@ -530,13 +530,13 @@ uvicorn server:app --host 0.0.0.0 --port 8000 --workers 4
 3. **拉取镜像**
    ```bash
    # 公开镜像无需登录
-   docker pull ghcr.io/mcjpg/serverstatusapi-server:latest
-   docker pull ghcr.io/mcjpg/serverstatusapi-node:latest
+   docker pull ghcr.io/minejpgcraft/serverstatusapi-server:latest
+   docker pull ghcr.io/minejpgcraft/serverstatusapi-node:latest
 
    # 私有镜像需先登录
    echo $GITHUB_TOKEN | docker login ghcr.io -u <username> --password-stdin
-   docker pull ghcr.io/mcjpg/serverstatusapi-server:latest
-   docker pull ghcr.io/mcjpg/serverstatusapi-node:latest
+   docker pull ghcr.io/minejpgcraft/serverstatusapi-server:latest
+   docker pull ghcr.io/minejpgcraft/serverstatusapi-node:latest
    ```
 
 ### 发布新版本
@@ -547,8 +547,8 @@ git tag v1.0.0
 git push origin v1.0.0
 
 # 两个工作流自动并行构建并推送：
-#   ghcr.io/mcjpg/serverstatusapi-server:1.0.0 / 1.0 / 1 / sha-xxx
-#   ghcr.io/mcjpg/serverstatusapi-node:1.0.0  / 1.0 / 1 / sha-xxx
+#   ghcr.io/minejpgcraft/serverstatusapi-server:1.0.0 / 1.0 / 1 / sha-xxx
+#   ghcr.io/minejpgcraft/serverstatusapi-node:1.0.0  / 1.0 / 1 / sha-xxx
 ```
 
 ## 技术栈
