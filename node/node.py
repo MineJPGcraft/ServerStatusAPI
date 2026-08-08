@@ -97,20 +97,17 @@ class NodeClient:
         self.server_timeout: float = float(self._parse_int_env(ENV_SERVER_TIMEOUT) or 10)
         offline_backoff: int = self._parse_int_env(ENV_OFFLINE_BACKOFF) or 3
 
-        # 线程池大小 = 并发数 × 4，防止超时线程累积导致级联耗尽
-        thread_pool_size = self.max_concurrency * 4
-        self._executor = ThreadPoolExecutor(max_workers=thread_pool_size, thread_name_prefix="mc")
+        # 线程池：同步 mcstatus 调用在此执行
+        # 大小 = 并发 × 4，防止超时线程累积导致级联耗尽
+        pool_size = self.max_concurrency * 4
+        self._executor = ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix="mc")
 
-        logger.info(f"性能参数: 并发={self.max_concurrency} | 超时={self.server_timeout}s | 退避={offline_backoff}x | 线程池={thread_pool_size}")
+        logger.info(f"性能参数: 并发={self.max_concurrency} | 超时={self.server_timeout}s | 退避={offline_backoff}x | 线程池={pool_size}")
 
         self.tracker = ServerTracker(backoff_multiplier=offline_backoff)
         self.latest_results: list[dict] = []
         self.semaphore = asyncio.Semaphore(self.max_concurrency)
         self._round_counter = 0
-
-        # JavaServer 对象缓存: ip -> (JavaServer, timestamp)
-        self._server_cache: dict[str, tuple[JavaServer, float]] = {}
-        self._cache_ttl = 300
 
     @staticmethod
     def _parse_int_env(val: Optional[str]) -> Optional[int]:
@@ -181,89 +178,61 @@ class NodeClient:
             return False
 
     # ----------------------------------------------------------
-    # MC服务器监测
+    # MC服务器监测 — 直接按 mcstatus 文档调用
     # ----------------------------------------------------------
 
-    async def _get_server(self, ip: str) -> Optional[JavaServer]:
+    def _check_mc_server(self, ip: str) -> dict:
         """
-        获取 JavaServer 对象（带缓存）
+        同步方法：直接按 mcstatus 文档示例调用
 
-        使用同步 JavaServer.lookup() 通过 asyncio.to_thread 包装。
-        timeout 参数设置 socket 超时，后续 status() 会使用此超时。
-        这确保即使 wait_for 超时后，底层线程也会在 timeout 秒后自动释放。
+        server = JavaServer.lookup("example.org:1234")
+        status = server.status()
+
+        不做任何额外处理，保持和文档一致。
         """
-        now = time.time()
-        cached = self._server_cache.get(ip)
-        if cached is not None:
-            server_obj, ts = cached
-            if now - ts < self._cache_ttl:
-                return server_obj
+        server = JavaServer.lookup(ip)
+        status = server.status()
 
-        try:
-            # lookup 同步调用，在线程池中执行
-            # timeout 参数存入 JavaServer 对象，status() 连接时使用此超时
-            server_obj = await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(
-                    self._executor,
-                    JavaServer.lookup,
-                    ip,
-                    self.server_timeout,  # socket timeout
-                ),
-                timeout=30,
-            )
-            self._server_cache[ip] = (server_obj, now)
-            return server_obj
-        except asyncio.TimeoutError:
-            logger.warning(f"DNS解析超时: {ip}")
-            return None
-        except Exception as e:
-            logger.warning(f"DNS解析失败: {ip} → {e}")
-            return None
+        motd = self._parse_motd(status)
+        icon = getattr(status, "icon", None)
+
+        return {
+            "ip": ip,
+            "online": True,
+            "players": {
+                "online": status.players.online,
+                "max": status.players.max,
+            },
+            "delay": round(status.latency, 2),
+            "version": status.version.name,
+            "motd": motd,
+            "icon": icon,
+        }
 
     async def monitor_server(self, ip: str) -> dict:
         """
         检测单台MC服务器状态
 
-        使用同步 status() 通过 run_in_executor 包装。
-        socket timeout（在 lookup 时设置）确保线程不会永久阻塞。
-        wait_for 超时比 socket timeout 多 5 秒作为缓冲。
+        就是把同步的 _check_mc_server 丢到线程池跑，
+        外面套一个 wait_for 做超时控制。
         """
         async with self.semaphore:
-            # Step 1: DNS+SRV 解析（带缓存）
-            server = await self._get_server(ip)
-            if server is None:
-                return {"ip": ip, "online": False}
-
-            # Step 2: 状态查询
             try:
-                status = await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     asyncio.get_running_loop().run_in_executor(
                         self._executor,
-                        server.status,
+                        self._check_mc_server,
+                        ip,
                     ),
-                    timeout=self.server_timeout + 5,  # 比 socket timeout 多 5 秒缓冲
+                    timeout=self.server_timeout + 20,  # 充足超时：DNS+SRV+TCP+协议
                 )
+                return result
             except asyncio.TimeoutError:
-                logger.warning(f"状态查询超时: {ip} ({self.server_timeout + 5}s)")
+                logger.warning(f"监测超时: {ip} ({self.server_timeout + 20}s)")
                 return {"ip": ip, "online": False}
             except Exception as e:
-                logger.warning(f"状态查询失败: {ip} → {e}")
-                self._server_cache.pop(ip, None)
+                logger.warning(f"监测失败: {ip} → {e}")
                 return {"ip": ip, "online": False}
-
-            # Step 3: 解析结果
-            motd = self._parse_motd(status)
-            icon = getattr(status, "icon", None)
-
-            return {
-                "ip": ip,
-                "online": True,
-                "players": {"online": status.players.online, "max": status.players.max},
-                "delay": round(status.latency, 2),
-                "version": status.version.name,
-                "motd": motd,
-                "icon": icon,
-            }
 
     @staticmethod
     def _parse_motd(status) -> dict:
