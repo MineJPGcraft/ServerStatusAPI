@@ -469,7 +469,7 @@ MONITOR_INTERVAL=10    # 无论服务端怎么配，此节点每10秒监测一�
 
 **场景3：全部由环境变量控制**
 ```env
-SERVER_URL=http://localhost:8000
+SERVER_URL=https://serverstatusapi.mcjpg.org
 DEVICE_ID=node-003
 TOKEN=node-003-token
 MONITOR_INTERVAL=10
