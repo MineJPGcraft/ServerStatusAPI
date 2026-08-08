@@ -239,32 +239,25 @@ class NodeClient:
         """
         同步方法：按 mcstatus 文档示例调用
 
-        1. 先直接用原始 IP 调用 mcstatus（它内部会尝试 SRV 解析）
-        2. 如果失败且 IP 不含端口，手动解析 SRV 后用解析结果重试
+        - IP 含端口 → 直接传入
+        - IP 不含端口 → 先手动解析 SRV 拼接端口，解析不出才传原始 IP
 
         server = JavaServer.lookup("example.org:1234")
         status = server.status()
         """
-        # 第一次：直接用原始地址，让 mcstatus 自己处理 SRV
-        try:
-            server = JavaServer.lookup(ip)
-            status = server.status()
-            return self._build_result(ip, status)
-        except Exception as e:
-            # 如果已经包含端口，不需要 SRV 兜底，直接报错
-            if self._has_port(ip):
-                raise
-
-            # 不含端口 → 尝试手动 SRV 解析兜底
+        if not self._has_port(ip):
+            # 不含端口，先手动解析 SRV
             resolved = self._resolve_srv(ip.strip())
-            if not resolved:
-                raise  # 没有 SRV 记录，原始错误抛出
+            if resolved:
+                address = resolved
+            else:
+                address = ip  # 没 SRV 记录，用原始地址走默认 25565
+        else:
+            address = ip
 
-            # 用手动解析的地址重试
-            logger.debug(f"mcstatus原生解析失败，SRV兜底: {ip} → {resolved}")
-            server = JavaServer.lookup(resolved)
-            status = server.status()
-            return self._build_result(ip, status)
+        server = JavaServer.lookup(address)
+        status = server.status()
+        return self._build_result(ip, status)
 
     def _build_result(self, ip: str, status) -> dict:
         """从 mcstatus 响应构建结果字典"""
