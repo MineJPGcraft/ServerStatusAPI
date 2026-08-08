@@ -152,9 +152,11 @@ class NodeClient:
 
         # ----- 性能参数 -----
         self.max_concurrency: int = self._parse_int_env(ENV_MAX_CONCURRENCY) or 50
-        self.server_timeout: float = float(self._parse_int_env(ENV_SERVER_TIMEOUT) or 10)
+        self.server_timeout: float = float(self._parse_int_env(ENV_SERVER_TIMEOUT) or 15)
         offline_backoff: int = self._parse_int_env(ENV_OFFLINE_BACKOFF) or 3
-        thread_pool_size: int = self._parse_int_env(ENV_THREAD_POOL_SIZE) or 100
+        # 线程池必须远大于并发数：超时的线程无法被杀死会继续占用线程，
+        # 需要足够的冗余线程防止级联耗尽
+        thread_pool_size: int = self._parse_int_env(ENV_THREAD_POOL_SIZE) or (self.max_concurrency * 4)
 
         # 专用线程池（避免耗尽默认线程池）
         self._executor = ThreadPoolExecutor(
@@ -180,10 +182,10 @@ class NodeClient:
         # 监测轮次计数器
         self._round_counter = 0
 
-        # DNS 缓存: host -> resolved (host, port)
-        self._dns_cache: dict[str, tuple[str, int]] = {}
-        self._dns_cache_ttl = 300  # DNS缓存5分钟
-        self._dns_cache_ts: dict[str, float] = {}
+        # JavaServer 对象缓存: ip -> (JavaServer对象, 缓存时间戳)
+        # 缓存 lookup() 的结果（含 SRV 解析），避免每轮重复 DNS+SRV 查询
+        self._server_cache: dict[str, tuple[JavaServer, float]] = {}
+        self._dns_cache_ttl = 300  # 缓存5分钟
 
     @staticmethod
     def _parse_int_env(val: Optional[str]) -> Optional[int]:
@@ -246,38 +248,6 @@ class NodeClient:
             f"监测 {self.monitor_interval}s | 上报 {self.report_interval}s | "
             f"配置刷新 {self.config_refresh_interval}s"
         )
-
-    # DNS 缓存
-
-    def _resolve_address(self, ip: str) -> tuple[str, int]:
-        """
-        解析地址为 (host, port)，带缓存
-
-        mcstatus 的 JavaServer.lookup 内部会做 DNS 查询，
-        我们缓存解析结果避免重复 DNS 开销。
-        """
-        now = time.time()
-
-        # 检查缓存是否有效
-        if ip in self._dns_cache:
-            if now - self._dns_cache_ts.get(ip, 0) < self._dns_cache_ttl:
-                return self._dns_cache[ip]
-
-        # 解析 host 和 port
-        if ":" in ip:
-            host, port_str = ip.rsplit(":", 1)
-            try:
-                port = int(port_str)
-            except ValueError:
-                host, port = ip, 25565
-        else:
-            host, port = ip, 25565
-
-        # 更新缓存
-        self._dns_cache[ip] = (host, port)
-        self._dns_cache_ts[ip] = now
-
-        return (host, port)
 
     # 与服务端通信
 
@@ -343,53 +313,81 @@ class NodeClient:
         检测单台MC服务器状态
         """
         async with self.semaphore:
+            # Step 1: 获取 JavaServer 对象（含 DNS+SRV 解析，带缓存）
+            server = await self._resolve_server_async(ip)
+            if server is None:
+                return {"ip": ip, "online": False}
+
+            # Step 2: 查询服务器状态（独立超时）
             try:
-                # 超时控制：防止死服务器阻塞并发槽
-                result = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
+                status = await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(
                         self._executor,
-                        self._check_mc_server,
-                        ip,
+                        server.status,
                     ),
                     timeout=self.server_timeout,
                 )
-                return result
             except asyncio.TimeoutError:
-                logger.debug(f"监测 {ip} 超时 ({self.server_timeout}s)")
+                logger.warning(f"状态查询 {ip} 超时 ({self.server_timeout}s)")
                 return {"ip": ip, "online": False}
             except Exception as e:
-                logger.debug(f"监测 {ip} 异常: {e}")
+                logger.warning(f"状态查询 {ip} 失败: {e}")
+                # 解析对象可能已失效，清除缓存让下轮重新解析
+                self._server_cache.pop(ip, None)
                 return {"ip": ip, "online": False}
 
-    def _check_mc_server(self, ip: str) -> dict:
+            # Step 3: 解析结果
+            motd = self._parse_motd(status)
+            icon = getattr(status, "icon", None)
+
+            return {
+                "ip": ip,
+                "online": True,
+                "players": {
+                    "online": status.players.online,
+                    "max": status.players.max,
+                },
+                "delay": round(status.latency, 2),
+                "version": status.version.name,
+                "motd": motd,
+                "icon": icon,
+            }
+
+    async def _resolve_server_async(self, ip: str) -> Optional[JavaServer]:
         """
-        同步方法：使用 mcstatus 检测MC服务器
+        异步获取 JavaServer 对象（带缓存）
 
-        参考: https://mcstatus.readthedocs.io/en/stable/api/basic/
+        - 缓存命中时直接返回，不消耗超时预算
+        - 缓存未命中时在线程池中执行 lookup()，给 30 秒超时
+        - lookup() 失败/超时后清除缓存，下轮重试
         """
-        # 使用 DNS 缓存
-        host, port = self._resolve_address(ip)
-        server = JavaServer(host, port)
-        status = server.status()
+        now = time.time()
 
-        # 解析 MOTD
-        motd = self._parse_motd(status)
+        # 检查缓存
+        cached = self._server_cache.get(ip)
+        if cached is not None:
+            server_obj, ts = cached
+            if now - ts < self._dns_cache_ttl:
+                return server_obj
 
-        # 获取图标（base64 或 None）
-        icon = getattr(status, "icon", None)
-
-        return {
-            "ip": ip,
-            "online": True,
-            "players": {
-                "online": status.players.online,
-                "max": status.players.max,
-            },
-            "delay": round(status.latency, 2),
-            "version": status.version.name,
-            "motd": motd,
-            "icon": icon,
-        }
+        # 缓存未命中，在线程池中执行 lookup
+        try:
+            server_obj = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    self._executor,
+                    JavaServer.lookup,
+                    ip,
+                ),
+                timeout=30,  # DNS+SRV 解析给充足时间
+            )
+            self._server_cache[ip] = (server_obj, now)
+            return server_obj
+        except asyncio.TimeoutError:
+            logger.warning(f"DNS解析 {ip} 超时 (30s)")
+            return None
+        except Exception as e:
+            logger.warning(f"DNS解析 {ip} 失败: {e}")
+            return None
 
     @staticmethod
     def _parse_motd(status) -> dict:
