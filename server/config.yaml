@@ -1,0 +1,71 @@
+# ============================================
+# Minecraft 服务器状态监测系统 - 服务端配置
+# ============================================
+
+# 服务器监听配置
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1            # uvicorn worker进程数（多worker需配合Redis共享状态）
+  cors_origins: ["*"]   # CORS 允许的来源
+
+# 服务器列表获取配置
+fetch:
+  url: "https://server-editor-api.mcjpg.dev/api/getjson"
+  interval: 300  # 获取间隔（秒），每5分钟刷新一次服务器列表
+  timeout: 30    # 请求超时（秒）
+
+# 节点默认配置（所有节点的全局默认值，优先级最低）
+# 当节点在 registered_nodes 中没有单独配置时，使用此默认值
+node_defaults:
+  monitor_interval: 30        # 监测间隔（秒）：节点每隔多久检测一次MC服务器
+  report_interval: 60         # 上报间隔（秒）：节点每隔多久向服务端上报数据
+  config_refresh_interval: 60 # 配置刷新间隔（秒）：节点每隔多久重新拉取配置
+  data_expire_minutes: 10     # 数据过期时间（分钟）：节点上报数据超过此时间后丢弃
+
+# 查询缓存配置
+cache:
+  enabled: true              # 是否启用查询结果缓存
+  ttl: 5                     # 缓存有效期（秒），平衡数据新鲜度和性能
+  max_size: 10000            # 最大缓存条目数
+
+# 限流配置
+rate_limit:
+  enabled: true              # 是否启用限流
+  queries_per_minute: 600    # 外部查询接口每分钟最大请求数
+  node_requests_per_minute: 120  # 节点请求每分钟最大请求数
+
+# ============================================================
+# 已注册的节点列表
+# ============================================================
+# 每个节点必须包含 id 和 token（必填）
+#
+# 可选：为单个节点覆盖默认配置（优先级高于 node_defaults）
+#   monitor_interval:        监测间隔（秒）
+#   report_interval:         上报间隔（秒）
+#   config_refresh_interval: 配置刷新间隔（秒）
+#
+# 不填的字段自动回退到 node_defaults 的默认值
+#
+# 配置优先级（从高到低）：
+#   1. 节点端环境变量覆盖（MONITOR_INTERVAL / REPORT_INTERVAL / CONFIG_REFRESH_INTERVAL）
+#   2. 服务端 registered_nodes 中该节点的单独配置
+#   3. 服务端 node_defaults 全局默认值
+# ============================================================
+registered_nodes:
+  - id: "node-001"
+    token: "change-me-please"
+    # 不填任何 interval → 全部走 node_defaults 默认值
+
+  - id: "node-002"
+    token: "change-me-too"
+    # 为此节点单独配置更快的监测频率
+    monitor_interval: 15
+    # report_interval 和 config_refresh_interval 不填 → 走默认值
+
+  - id: "node-003"
+    token: "node-003-token"
+    # 为此节点完全自定义所有间隔
+    monitor_interval: 10
+    report_interval: 30
+    config_refresh_interval: 120

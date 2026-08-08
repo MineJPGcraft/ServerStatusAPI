@@ -1,0 +1,135 @@
+# ============================================================
+# Minecraft 服务器状态监测系统 - Docker Compose
+# ============================================================
+# 包含服务端 + 节点端的完整部署方案
+#
+# 使用方法：
+#   1. 准备服务端配置文件：
+#      - 从 server/config.yaml 复制一份到 ./config/server-config.yaml
+#      - 修改其中的 registered_nodes（节点ID和Token）
+#   2. 修改下方环境变量（节点端的 SERVER_URL / DEVICE_ID / TOKEN）
+#   3. docker compose up -d
+#
+# 镜像来源：GHCR（GitHub Actions 自动构建发布）
+# ============================================================
+
+services:
+  # ============================================================
+  # 服务端
+  # ============================================================
+  mcstatus-server:
+    image: ghcr.io/mcjpg/serverstatusapi-server:latest
+    container_name: mcstatus-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+
+    # 挂载外部配置文件（修改后重启容器生效）
+    volumes:
+      - ./config/server-config.yaml:/app/config.yaml:ro
+
+    # 也可通过环境变量指定配置路径
+    environment:
+      CONFIG_PATH: "/app/config.yaml"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+          cpus: "0.2"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ============================================================
+  # 节点端
+  # ============================================================
+  mcstatus-node:
+    image: ghcr.io/mcjpg/serverstatusapi-node:latest
+    container_name: mcstatus-node
+    restart: unless-stopped
+    depends_on:
+      mcstatus-server:
+        condition: service_healthy
+
+    environment:
+      # ---------- 必填 ----------
+      # 如果节点和服务端在同一台机器上，用容器名通信
+      SERVER_URL: "http://mcstatus-server:8000"
+      DEVICE_ID: "node-001"
+      TOKEN: "change-me-please"
+
+      # ---------- 可选：覆盖服务端配置 ----------
+      # MONITOR_INTERVAL: "15"
+      # REPORT_INTERVAL: "30"
+      # CONFIG_REFRESH_INTERVAL: "120"
+
+      # ---------- 可选：性能调优 ----------
+      MAX_CONCURRENCY: "50"
+      SERVER_TIMEOUT: "10"
+      OFFLINE_BACKOFF: "3"
+      THREAD_POOL_SIZE: "100"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import mcstatus; import httpx"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+          cpus: "0.2"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ============================================================
+# 如果只需要节点端（连接远程服务端），注释掉上面的 mcstatus-server
+# 并取消下面的注释，修改 SERVER_URL 为远程地址
+# ============================================================
+# services:
+#   mcstatus-node:
+#     image: ghcr.io/mcjpg/serverstatusapi-node:latest
+#     container_name: mcstatus-node
+#     restart: unless-stopped
+#     environment:
+#       SERVER_URL: "http://your-remote-server:8000"
+#       DEVICE_ID: "node-001"
+#       TOKEN: "change-me-please"
+#       MAX_CONCURRENCY: "50"
+#       SERVER_TIMEOUT: "10"
+#       OFFLINE_BACKOFF: "3"
+#       THREAD_POOL_SIZE: "100"
+#     healthcheck:
+#       test: ["CMD", "python", "-c", "import mcstatus; import httpx"]
+#       interval: 60s
+#       timeout: 10s
+#       retries: 3
+#       start_period: 10s
+#     logging:
+#       driver: json-file
+#       options:
+#         max-size: "10m"
+#         max-file: "3"
