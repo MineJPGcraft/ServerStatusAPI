@@ -19,6 +19,10 @@ try:
 except ImportError:
     pass
 
+# SRV 记录解析
+import dns.resolver
+import dns.exception
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [Node] %(message)s",
@@ -77,7 +81,11 @@ class NodeClient:
         self.device_id = device_id
         self.token = token
         self.headers = {"X-Node-Id": device_id, "X-Node-Token": token}
-        self.client = httpx.AsyncClient(timeout=30)
+        # 自定义 User-Agent，避免某些 WAF/反向代理拦截 httpx 默认 UA 导致 POST 403
+        self.client = httpx.AsyncClient(
+            timeout=30,
+            headers={"User-Agent": "MCStatusNode/1.0"},
+        )
 
         self.monitor_interval: int = 30
         self.report_interval: int = 60
@@ -181,23 +189,90 @@ class NodeClient:
     # MC服务器监测 — 直接按 mcstatus 文档调用
     # ----------------------------------------------------------
 
+    @staticmethod
+    def _has_port(ip: str) -> bool:
+        """判断 IP 字符串是否已包含端口号"""
+        if ":" not in ip:
+            return False
+        # IPv6 不处理（MC服务器极少用纯IPv6地址+端口格式）
+        # 只判断 host:port 格式，port 部分必须是数字
+        parts = ip.rsplit(":", 1)
+        return len(parts) == 2 and parts[1].isdigit()
+
+    @staticmethod
+    def _resolve_srv(host: str) -> Optional[str]:
+        """
+        手动解析 Minecraft SRV 记录（兜底用）
+
+        SRV 记录格式：_minecraft._tcp.<domain> → priority weight port target
+        如果找到 SRV 记录，返回 "target:port"
+        如果没找到或解析失败，返回 None
+        """
+        try:
+            resolver = dns.resolver.Resolver()
+            resolver.timeout = 5
+            resolver.lifetime = 10
+
+            answers = resolver.resolve(f"_minecraft._tcp.{host}", "SRV")
+            if not answers:
+                return None
+
+            # 取优先级最高（priority最小）的记录
+            best = min(answers, key=lambda r: (r.priority, r.weight))
+            target = str(best.target).rstrip(".")
+            port = int(best.port)
+
+            if target and port > 0:
+                return f"{target}:{port}"
+        except dns.resolver.NXDOMAIN:
+            pass
+        except dns.resolver.NoAnswer:
+            pass
+        except dns.exception.Timeout:
+            logger.debug(f"SRV解析超时: {host}")
+        except Exception as e:
+            logger.debug(f"SRV解析异常: {host} → {e}")
+
+        return None
+
     def _check_mc_server(self, ip: str) -> dict:
         """
-        同步方法：直接按 mcstatus 文档示例调用
+        同步方法：按 mcstatus 文档示例调用
+
+        1. 先直接用原始 IP 调用 mcstatus（它内部会尝试 SRV 解析）
+        2. 如果失败且 IP 不含端口，手动解析 SRV 后用解析结果重试
 
         server = JavaServer.lookup("example.org:1234")
         status = server.status()
-
-        不做任何额外处理，保持和文档一致。
         """
-        server = JavaServer.lookup(ip)
-        status = server.status()
+        # 第一次：直接用原始地址，让 mcstatus 自己处理 SRV
+        try:
+            server = JavaServer.lookup(ip)
+            status = server.status()
+            return self._build_result(ip, status)
+        except Exception as e:
+            # 如果已经包含端口，不需要 SRV 兜底，直接报错
+            if self._has_port(ip):
+                raise
 
+            # 不含端口 → 尝试手动 SRV 解析兜底
+            resolved = self._resolve_srv(ip.strip())
+            if not resolved:
+                raise  # 没有 SRV 记录，原始错误抛出
+
+            # 用手动解析的地址重试
+            logger.debug(f"mcstatus原生解析失败，SRV兜底: {ip} → {resolved}")
+            server = JavaServer.lookup(resolved)
+            status = server.status()
+            return self._build_result(ip, status)
+
+    def _build_result(self, ip: str, status) -> dict:
+        """从 mcstatus 响应构建结果字典"""
         motd = self._parse_motd(status)
         icon = getattr(status, "icon", None)
 
         return {
-            "ip": ip,
+            "ip": ip,  # 始终返回原始 IP
             "online": True,
             "players": {
                 "online": status.players.online,
