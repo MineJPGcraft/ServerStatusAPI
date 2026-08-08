@@ -817,6 +817,50 @@ async def health():
 
 
 
+# 接口：节点状态检查
+
+
+
+@app.get("/api/nodes/status")
+async def nodes_status():
+    """
+    检查节点在线状态
+
+    根据 active_nodes 中最后上报时间判断节点是否在线（未过期）。
+    在线/离线判断标准与数据过期时间一致（config.yaml 中的 data_expire_minutes）。
+
+    返回：
+    {
+      "online": ["node-001", "node-002"],
+      "offline": ["node-003"]
+    }
+    """
+    now = time.time()
+    expire_seconds = storage.expire_seconds
+
+    # 已注册的所有节点 ID
+    registered_ids = {
+        n["id"] for n in config_manager.config.get("registered_nodes", [])
+    }
+
+    # 在线 = 已注册 且 active_nodes 中有记录且未过期
+    online = []
+    offline = []
+
+    for node_id in registered_ids:
+        last_seen = storage.active_nodes.get(node_id)
+        if last_seen is not None and now - last_seen < expire_seconds:
+            online.append(node_id)
+        else:
+            offline.append(node_id)
+
+    return {
+        "online": sorted(online),
+        "offline": sorted(offline),
+    }
+
+
+
 # 接口：手动触发配置重载
 
 
